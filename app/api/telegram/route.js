@@ -44,13 +44,29 @@ async function handleMessage(message) {
   if (text === '/start') {
     await tg('sendMessage', {
       chat_id: chatId,
-      text: 'Привет! Напиши название фильма или сериала — найду постер и описание. А коллекцию можно открыть кнопкой ниже 👇',
+      text: 'Привет! Напиши название фильма или сериала — найду постер и описание. Либо сразу команду /ad Название — добавлю в избранное. А открыть коллекцию можно кнопкой ниже 👇',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🎬 Открыть коллекцию', web_app: { url: APP_URL } }],
+          [{ text: '🎬 Открыть избранное', web_app: { url: APP_URL } }],
         ],
       },
     });
+    return;
+  }
+
+  // Команда /ad <название> — добавляет фильм напрямую, без подтверждения
+  if (/^\/ad(\s|$)/i.test(text)) {
+    const query = text.replace(/^\/ad/i, '').trim();
+
+    if (!query) {
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: 'Напиши название после команды, например:\n/ad Матрица',
+      });
+      return;
+    }
+
+    await handleAddCommand(chatId, query);
     return;
   }
 
@@ -80,6 +96,66 @@ async function handleMessage(message) {
   await sendMovieCard(chatId, item);
 }
 
+// Обработка /ad: если название совпадает точно — добавляем сразу,
+// если нет — предлагаем ближайший вариант с кнопкой подтверждения
+async function handleAddCommand(chatId, query) {
+  let results;
+  try {
+    results = await searchMulti(query);
+  } catch (err) {
+    console.error(err);
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Не получилось найти. Попробуй ещё раз чуть позже.',
+    });
+    return;
+  }
+
+  if (!results || results.length === 0) {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: `Ничего не нашёл по запросу «${query}» 🤔 Проверь название и попробуй ещё раз.`,
+    });
+    return;
+  }
+
+  const top = formatResult(results[0]);
+  const exact = normalize(top.title) === normalize(query);
+
+  if (exact) {
+    const outcome = await saveToCollection(top.media_type, top.tmdb_id);
+
+    if (outcome.alreadyExists) {
+      await tg('sendMessage', { chat_id: chatId, text: `«${top.title}» уже в избранном ✅` });
+    } else if (outcome.error) {
+      await tg('sendMessage', { chat_id: chatId, text: 'Не получилось сохранить, попробуй ещё раз.' });
+    } else {
+      await tg('sendMessage', {
+        chat_id: chatId,
+        text: `✅ Добавлено в избранное: ${top.title}${top.year ? ` (${top.year})` : ''}`,
+      });
+    }
+    return;
+  }
+
+  const kindWord = top.media_type === 'tv' ? 'сериал' : 'фильм';
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: `Точного совпадения не нашёл. Может, вы имели в виду — «${top.title}»${top.year ? ` (${top.year})` : ''}, ${kindWord}?`,
+    reply_markup: {
+      inline_keyboard: [[{ text: '✅ Добавить', callback_data: `save_${top.media_type}_${top.tmdb_id}` }]],
+    },
+  });
+}
+
+// Приводит строку к простому виду для сравнения ("Матрица!" -> "матрица")
+function normalize(str) {
+  return (str || '')
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9]+/gi, '')
+    .trim();
+}
+
 async function sendMovieCard(chatId, item) {
   const ratingText = item.rating ? item.rating.toFixed(1) : '—';
   const description = item.description
@@ -98,7 +174,7 @@ async function sendMovieCard(chatId, item) {
       ],
       [
         {
-          text: '✅ Сохранить в коллекцию',
+          text: '✅ Сохранить в избранное',
           callback_data: `save_${item.media_type}_${item.tmdb_id}`,
         },
       ],
@@ -137,6 +213,32 @@ async function handleCallback(callback) {
   const [, mediaType, tmdbIdStr] = data.split('_');
   const tmdbId = parseInt(tmdbIdStr, 10);
 
+  const outcome = await saveToCollection(mediaType, tmdbId);
+
+  if (outcome.alreadyExists) {
+    await tg('answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Уже в избранном ✅',
+    });
+    return;
+  }
+
+  if (outcome.error) {
+    await tg('answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Не получилось сохранить, попробуй ещё раз',
+    });
+    return;
+  }
+
+  await tg('answerCallbackQuery', {
+    callback_query_id: callback.id,
+    text: 'Сохранено в избранное 🎬',
+  });
+}
+
+// Общая логика сохранения фильма/сериала в базу — используется и из /ad, и из кнопки
+async function saveToCollection(mediaType, tmdbId) {
   const { data: existing } = await supabase
     .from('movies')
     .select('id')
@@ -144,15 +246,15 @@ async function handleCallback(callback) {
     .eq('media_type', mediaType)
     .maybeSingle();
 
-  if (existing) {
-    await tg('answerCallbackQuery', {
-      callback_query_id: callback.id,
-      text: 'Уже в коллекции ✅',
-    });
-    return;
-  }
+  if (existing) return { alreadyExists: true };
 
-  const item = await getDetails(mediaType, tmdbId);
+  let item;
+  try {
+    item = await getDetails(mediaType, tmdbId);
+  } catch (err) {
+    console.error(err);
+    return { error: true };
+  }
 
   const { error } = await supabase.from('movies').insert({
     tmdb_id: item.tmdb_id,
@@ -167,17 +269,10 @@ async function handleCallback(callback) {
 
   if (error) {
     console.error(error);
-    await tg('answerCallbackQuery', {
-      callback_query_id: callback.id,
-      text: 'Не получилось сохранить, попробуй ещё раз',
-    });
-    return;
+    return { error: true };
   }
 
-  await tg('answerCallbackQuery', {
-    callback_query_id: callback.id,
-    text: 'Сохранено в коллекцию 🎬',
-  });
+  return { ok: true, item };
 }
 
 // Telegram иногда шлёт GET для проверки — отвечаем, чтобы не было 405 в логах

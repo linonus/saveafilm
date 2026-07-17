@@ -1,15 +1,17 @@
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;700;800&display=swap');
 
 :root {
-  --bg: #08090a;
-  --surface: #101312;
-  --surface-hover: #181c1a;
-  --gold: #9dff45;
-  --gold-dim: #4d8a2a;
-  --curtain: #ff4d4d;
-  --text: #eef2ee;
-  --text-muted: #7c8983;
-  --border: #232823;
+  --bg: #0c0c0d;
+  --surface: #1b1b1d;
+  --surface-hover: #242426;
+  --card-grad: linear-gradient(155deg, #262628 0%, #171718 65%, #121213 100%);
+  --gold: #f5b400;
+  --gold-soft: #ffd166;
+  --gold-dim: #8a6a1a;
+  --curtain: #ff5c5c;
+  --text: #f2f0ec;
+  --text-muted: #8c8a87;
+  --border: #2a2a2c;
 }
 
 * {
@@ -24,10 +26,10 @@ body {
   color: var(--text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background-image:
-    radial-gradient(circle at 15% 0%, rgba(157, 255, 69, 0.08), transparent 40%),
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: auto, 28px 28px, 28px 28px;
+    radial-gradient(circle at 20% -10%, rgba(245, 180, 0, 0.10), transparent 45%),
+    radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.04), transparent 40%),
+    linear-gradient(180deg, #131314 0%, #0c0c0d 40%);
+  background-attachment: fixed;
 }
 
 .marquee {

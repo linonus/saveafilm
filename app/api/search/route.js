@@ -1,5 +1,5 @@
 import { searchMulti, formatResult } from '../../../lib/tmdb';
-
+export const dynamic = 'force-dynamic';
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get('q');

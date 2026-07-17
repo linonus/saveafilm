@@ -20,6 +20,34 @@ function StarIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
 export default function Home() {
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -28,6 +56,9 @@ export default function Home() {
   const [searchResults, setSearchResults] = useState([]);
   const [addingId, setAddingId] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [removingIds, setRemovingIds] = useState(new Set());
   const debounceRef = useRef(null);
 
   useEffect(() => {
@@ -92,22 +123,86 @@ export default function Home() {
     }
   }
 
-  async function deleteMovie(id) {
-    try {
-      await fetch(`/api/movies?id=${id}`, { method: 'DELETE' });
-      setSelected(null);
-      await loadMovies();
-    } catch (err) {
-      console.error(err);
+  // Удаление одного фильма (из модалки) — сначала анимация, потом запрос
+  function deleteMovie(id) {
+    setSelected(null);
+    setRemovingIds((prev) => new Set(prev).add(id));
+    setTimeout(async () => {
+      try {
+        await fetch(`/api/movies?id=${id}`, { method: 'DELETE' });
+      } catch (err) {
+        console.error(err);
+      }
+      setMovies((prev) => prev.filter((m) => m.id !== id));
+      setRemovingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 420);
+  }
+
+  // Массовое удаление из режима выбора
+  function deleteSelected() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setRemovingIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setTimeout(async () => {
+      try {
+        await Promise.all(ids.map((id) => fetch(`/api/movies?id=${id}`, { method: 'DELETE' })));
+      } catch (err) {
+        console.error(err);
+      }
+      setMovies((prev) => prev.filter((m) => !ids.includes(m.id)));
+      setRemovingIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }, 420);
+  }
+
+  function toggleSelectMode() {
+    setSelectMode((prev) => !prev);
+    setSelectedIds(new Set());
+  }
+
+  function onPosterClick(m) {
+    if (selectMode) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(m.id)) next.delete(m.id);
+        else next.add(m.id);
+        return next;
+      });
+      return;
     }
+    setSelected(m);
   }
 
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={`marquee ${styles.title}`}>SAVE A FILM</h1>
-        {tab === 'favorites' && (
-          <span className={styles.count}>{movies.length} в избранном</span>
+        <div className={styles.headerLeft}>
+          <h1 className={`marquee ${styles.title}`}>SAVE A FILM</h1>
+        </div>
+        {tab === 'favorites' && movies.length > 0 && (
+          <div className={styles.headerLeft}>
+            <span className={styles.count}>{movies.length} в избранном</span>
+            <button
+              className={`${styles.iconBtn} ${selectMode ? styles.iconBtnActive : ''}`}
+              onClick={toggleSelectMode}
+              aria-label="Удалить фильмы"
+            >
+              {selectMode ? <CloseIcon /> : <TrashIcon />}
+            </button>
+          </div>
         )}
       </div>
 
@@ -167,21 +262,51 @@ export default function Home() {
           )}
 
           <div className={styles.grid}>
-            {movies.map((m) => (
-              <div className={styles.posterCard} key={m.id} onClick={() => setSelected(m)}>
-                {m.poster_url ? (
-                  <img className={styles.posterImg} src={m.poster_url} alt={m.title} />
-                ) : (
-                  <div className={styles.posterFallback}>{m.title}</div>
-                )}
-                <div className={styles.posterOverlay}>
-                  <div className={styles.posterTitle}>{m.title}</div>
-                  {m.year && <div className={styles.posterYear}>{m.year}</div>}
+            {movies.map((m) => {
+              const isSelected = selectedIds.has(m.id);
+              const isRemoving = removingIds.has(m.id);
+              return (
+                <div
+                  className={[
+                    styles.posterCard,
+                    isSelected ? styles.posterCardSelected : '',
+                    isRemoving ? styles.posterCardRemoving : '',
+                  ].join(' ')}
+                  key={m.id}
+                  onClick={() => onPosterClick(m)}
+                >
+                  {selectMode && (
+                    <div className={styles.selectBadge}>
+                      <CheckIcon />
+                    </div>
+                  )}
+                  {m.poster_url ? (
+                    <img className={styles.posterImg} src={m.poster_url} alt={m.title} />
+                  ) : (
+                    <div className={styles.posterFallback}>{m.title}</div>
+                  )}
+                  <div className={styles.posterOverlay}>
+                    <div className={styles.posterTitle}>{m.title}</div>
+                    {m.year && <div className={styles.posterYear}>{m.year}</div>}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
+      )}
+
+      {selectMode && (
+        <div className={styles.selectBar}>
+          <span className={styles.selectBarCount}>Выбрано: {selectedIds.size}</span>
+          <button
+            className={styles.selectBarDelete}
+            disabled={selectedIds.size === 0}
+            onClick={deleteSelected}
+          >
+            Удалить
+          </button>
+        </div>
       )}
 
       {selected && (
@@ -199,7 +324,14 @@ export default function Home() {
               <div>
                 <h2 className={styles.modalTitle}>{selected.title}</h2>
                 <div className={styles.modalMeta}>
-                  {selected.year || ''} {selected.rating ? `· ⭐ ${Number(selected.rating).toFixed(1)}` : ''}
+                  {selected.year || ''}
+                  {selected.rating ? (
+                    <>
+                      {' · '}
+                      <img className={styles.ratingIcon} src="/img/star.png" alt="" />
+                      {Number(selected.rating).toFixed(1)}
+                    </>
+                  ) : null}
                 </div>
               </div>
             </div>

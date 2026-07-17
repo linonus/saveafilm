@@ -1,15 +1,15 @@
-@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;700;800&display=swap');
 
 :root {
-  --bg: #0f0d0b;
-  --surface: #1a1613;
-  --surface-hover: #241f1a;
-  --gold: #e3b23c;
-  --gold-dim: #8a6a2a;
-  --curtain: #7a2b2b;
-  --text: #f3ede0;
-  --text-muted: #9b948a;
-  --border: #2c2620;
+  --bg: #08090a;
+  --surface: #101312;
+  --surface-hover: #181c1a;
+  --gold: #9dff45;
+  --gold-dim: #4d8a2a;
+  --curtain: #ff4d4d;
+  --text: #eef2ee;
+  --text-muted: #7c8983;
+  --border: #232823;
 }
 
 * {
@@ -23,11 +23,17 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(157, 255, 69, 0.08), transparent 40%),
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: auto, 28px 28px, 28px 28px;
 }
 
 .marquee {
   font-family: 'Bebas Neue', 'Inter', sans-serif;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 button {

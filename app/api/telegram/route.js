@@ -4,6 +4,7 @@ import { supabase } from '../../../lib/supabase';
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL;
+export const dynamic = 'force-dynamic';
 
 async function tg(method, payload) {
   const res = await fetch(`${TG_API}/${method}`, {

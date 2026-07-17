@@ -13,9 +13,11 @@
 }
 
 .title {
-  font-size: 32px;
+  font-size: 36px;
+  font-weight: 800;
   color: var(--gold);
   margin: 0;
+  text-shadow: 0 0 18px rgba(157, 255, 69, 0.35);
 }
 
 .count {
@@ -41,7 +43,8 @@
 }
 
 .searchInput:focus {
-  border-color: var(--gold-dim);
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(157, 255, 69, 0.12);
 }
 
 .searchResults {
@@ -99,13 +102,14 @@
 
 .addBtn {
   background: var(--gold);
-  color: #1a1613;
+  color: #0a0e0a;
   border: none;
   border-radius: 8px;
   padding: 7px 12px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   flex-shrink: 0;
+  box-shadow: 0 0 14px rgba(157, 255, 69, 0.3);
 }
 
 .addBtn:disabled {
@@ -126,6 +130,12 @@
   aspect-ratio: 2 / 3;
   background: var(--surface);
   border: 1px solid var(--border);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.posterCard:hover {
+  border-color: var(--gold-dim);
+  transform: translateY(-2px);
 }
 
 .posterImg {
@@ -177,7 +187,8 @@
 }
 
 .emptyTitle {
-  font-size: 22px;
+  font-size: 24px;
+  font-weight: 800;
   color: var(--gold);
   margin-bottom: 8px;
 }
@@ -261,11 +272,12 @@
   text-align: center;
   text-decoration: none;
   background: var(--gold);
-  color: #1a1613;
-  font-weight: 600;
+  color: #0a0e0a;
+  font-weight: 700;
   padding: 12px;
   border-radius: 10px;
   font-size: 14px;
+  box-shadow: 0 0 14px rgba(157, 255, 69, 0.25);
 }
 
 .deleteBtn {
@@ -275,4 +287,5 @@
   padding: 12px;
   border-radius: 10px;
   font-size: 14px;
-}
+  }
+    

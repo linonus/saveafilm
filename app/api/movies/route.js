@@ -1,5 +1,6 @@
 import { supabase } from '../../../lib/supabase';
 import { getDetails } from '../../../lib/tmdb';
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const { data, error } = await supabase

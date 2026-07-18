@@ -1,5 +1,6 @@
 import { searchMulti, getDetails, formatResult } from '../../../lib/tmdb';
 import { supabase } from '../../../lib/supabase';
+import { guessTitleFromDescription, guessTitleFromImage } from '../../../lib/gemini';
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -27,6 +28,20 @@ async function upsertUser(from) {
   });
 }
 
+// "Жду ответа" — чтобы помнить между сообщениями, что именно бот спросил
+async function getPendingAction(userId) {
+  const { data } = await supabase
+    .from('users')
+    .select('pending_action')
+    .eq('telegram_id', userId)
+    .maybeSingle();
+  return data?.pending_action || null;
+}
+
+async function setPendingAction(userId, action) {
+  await supabase.from('users').update({ pending_action: action }).eq('telegram_id', userId);
+}
+
 export async function POST(request) {
   let update;
   try {
@@ -45,16 +60,27 @@ export async function POST(request) {
     console.error('Telegram webhook error:', err);
   }
 
-  // Telegram ждёт быстрый 200 OK вне зависимости от результата обработки
   return Response.json({ ok: true });
 }
 
 async function handleMessage(message) {
   const chatId = message.chat.id;
   const userId = message.from?.id ?? chatId;
-  const text = (message.text || '').trim();
+  const text = (message.text || message.caption || '').trim();
 
   await upsertUser(message.from);
+
+  // Пришло фото — обрабатываем, только если это явно запрошено
+  // (подпись /search_img или бот только что попросил прислать кадр)
+  if (message.photo && message.photo.length > 0) {
+    const isSearchImgCaption = /^\/search_img\b/i.test(text);
+    const pending = await getPendingAction(userId);
+    if (isSearchImgCaption || pending === 'search_image') {
+      await setPendingAction(userId, null);
+      await handleImageSearch(chatId, message.photo);
+    }
+    return;
+  }
 
   if (text === '/start' || text.startsWith('/start ')) {
     const payload = text.slice('/start'.length).trim();
@@ -68,35 +94,75 @@ async function handleMessage(message) {
 
     await tg('sendMessage', {
       chat_id: chatId,
-      text: 'Привет! Напиши название фильма или сериала — найду постер и описание. Либо сразу команду /ad Название — добавлю в избранное. А открыть коллекцию можно кнопкой ниже 👇',
+      text:
+        'Привет! Вот что я умею:\n\n' +
+        '🎬 Просто напиши название — покажу карточку с кнопкой сохранить\n' +
+        '➕ /ad — спрошу, что добавить, и сохраню сразу\n' +
+        '🔎 /search — опиши сюжет, если не помнишь название\n' +
+        '🖼 /search_img — пришли кадр из фильма, попробую узнать\n\n' +
+        'А открыть коллекцию можно кнопкой ниже 👇',
       reply_markup: {
-
-        inline_keyboard: [
-          [{ text: '🎬 Открыть избранное', web_app: { url: APP_URL } }],
-        ],
+        inline_keyboard: [[{ text: '🎬 Открыть избранное', web_app: { url: APP_URL } }]],
       },
     });
     return;
   }
 
-  // Команда /ad <название> — добавляет фильм напрямую, без подтверждения
-  if (/^\/ad(\s|$)/i.test(text)) {
+  // Голая команда /ad — спрашиваем название следующим сообщением
+  if (/^\/ad$/i.test(text)) {
+    await setPendingAction(userId, 'add_movie');
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Какой фильм или сериал хочешь добавить? Просто напиши название следующим сообщением 🎬',
+    });
+    return;
+  }
+
+  // /ad <название> одним сообщением — как раньше, сразу добавляем
+  if (/^\/ad\s/i.test(text)) {
+    await setPendingAction(userId, null);
     const query = text.replace(/^\/ad/i, '').trim();
-
-    if (!query) {
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: 'Напиши название после команды, например:\n/ad Матрица',
-      });
-      return;
-    }
-
     await handleAddCommand(chatId, query, userId);
+    return;
+  }
+
+  // Голая команда /search_img — просим прислать фото следующим сообщением
+  if (/^\/search_img$/i.test(text)) {
+    await setPendingAction(userId, 'search_image');
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Пришли фото или кадр из фильма/сериала — постараюсь узнать, что это 🖼',
+    });
+    return;
+  }
+
+  // Команда /search — просим описать сюжет следующим сообщением
+  if (/^\/search$/i.test(text)) {
+    await setPendingAction(userId, 'search_describe');
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Опиши, что помнишь: сюжет, актёров, отдельные детали, эпоху — попробую угадать название 🔎',
+    });
     return;
   }
 
   if (!text || text.startsWith('/')) return;
 
+  const pending = await getPendingAction(userId);
+
+  if (pending === 'add_movie') {
+    await setPendingAction(userId, null);
+    await handleAddCommand(chatId, text, userId);
+    return;
+  }
+
+  if (pending === 'search_describe') {
+    await setPendingAction(userId, null);
+    await handleDescribeSearch(chatId, text);
+    return;
+  }
+
+  // Обычное сообщение без контекста — ищем и показываем карточку с кнопкой
   let results;
   try {
     results = await searchMulti(text);
@@ -121,9 +187,18 @@ async function handleMessage(message) {
   await sendMovieCard(chatId, item);
 }
 
-// Обработка /ad: если название совпадает точно — добавляем сразу,
-// если нет — предлагаем ближайший вариант с кнопкой подтверждения
+// Обработка /ad: если название совпадает точно — добавляем сразу и
+// присылаем картинку с подтверждением; если нет — предлагаем ближайший
+// вариант с кнопкой подтверждения
 async function handleAddCommand(chatId, query, userId) {
+  if (!query) {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Напиши название после команды, например:\n/ad Матрица',
+    });
+    return;
+  }
+
   let results;
   try {
     results = await searchMulti(query);
@@ -152,13 +227,18 @@ async function handleAddCommand(chatId, query, userId) {
 
     if (outcome.alreadyExists) {
       await tg('sendMessage', { chat_id: chatId, text: `«${top.title}» уже в избранном ✅` });
-    } else if (outcome.error) {
+      return;
+    }
+    if (outcome.error) {
       await tg('sendMessage', { chat_id: chatId, text: 'Не получилось сохранить, попробуй ещё раз.' });
+      return;
+    }
+
+    const caption = `✅ Добавлено в избранное: ${top.title}${top.year ? ` (${top.year})` : ''}`;
+    if (top.poster_url) {
+      await tg('sendPhoto', { chat_id: chatId, photo: top.poster_url, caption });
     } else {
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: `✅ Добавлено в избранное: ${top.title}${top.year ? ` (${top.year})` : ''}`,
-      });
+      await tg('sendMessage', { chat_id: chatId, text: caption });
     }
     return;
   }
@@ -171,6 +251,114 @@ async function handleAddCommand(chatId, query, userId) {
       inline_keyboard: [[{ text: '✅ Добавить', callback_data: `save_${top.media_type}_${top.tmdb_id}` }]],
     },
   });
+}
+
+// /search: угадываем название по описанию сюжета через Gemini, показываем
+// карточки самых вероятных вариантов
+async function handleDescribeSearch(chatId, description) {
+  await tg('sendChatAction', { chat_id: chatId, action: 'typing' });
+
+  let titles;
+  try {
+    titles = await guessTitleFromDescription(description);
+  } catch (err) {
+    console.error(err);
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Не получилось обратиться к ИИ-поиску. Попробуй ещё раз чуть позже.',
+    });
+    return;
+  }
+
+  if (!titles || titles.length === 0) {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: 'Не смог угадать по описанию 🤔 Попробуй добавить деталей — эпоху, актёров, сюжетные повороты.',
+    });
+    return;
+  }
+
+  await tg('sendMessage', { chat_id: chatId, text: `Возможно, это: ${titles.join(', ')}. Ищу карточки…` });
+
+  let sentAny = false;
+  for (const title of titles.slice(0, 3)) {
+    let results;
+    try {
+      results = await searchMulti(title);
+    } catch (err) {
+      continue;
+    }
+    if (results && results.length > 0) {
+      const item = formatResult(results[0]);
+      await sendMovieCard(chatId, item);
+      sentAny = true;
+    }
+  }
+
+  if (!sentAny) {
+    await tg('sendMessage', { chat_id: chatId, text: 'Угадал названия, но не нашёл карточки в базе TMDB.' });
+  }
+}
+
+// /search_img: скачиваем фото из Telegram, отправляем в Gemini, ищем
+// найденное название в TMDB и показываем карточку с кнопкой сохранить
+async function handleImageSearch(chatId, photoSizes) {
+  await tg('sendChatAction', { chat_id: chatId, action: 'typing' });
+
+  const largest = photoSizes[photoSizes.length - 1];
+  const fileInfo = await tg('getFile', { file_id: largest.file_id });
+  const filePath = fileInfo?.result?.file_path;
+
+  if (!filePath) {
+    await tg('sendMessage', { chat_id: chatId, text: 'Не получилось загрузить фото. Попробуй ещё раз.' });
+    return;
+  }
+
+  let base64Image;
+  try {
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
+    const fileRes = await fetch(fileUrl);
+    const buffer = await fileRes.arrayBuffer();
+    base64Image = Buffer.from(buffer).toString('base64');
+  } catch (err) {
+    console.error(err);
+    await tg('sendMessage', { chat_id: chatId, text: 'Не получилось загрузить фото. Попробуй ещё раз.' });
+    return;
+  }
+
+  let titles;
+  try {
+    titles = await guessTitleFromImage(base64Image, 'image/jpeg');
+  } catch (err) {
+    console.error(err);
+    await tg('sendMessage', { chat_id: chatId, text: 'Не получилось распознать кадр. Попробуй другое фото.' });
+    return;
+  }
+
+  if (!titles || titles.length === 0) {
+    await tg('sendMessage', { chat_id: chatId, text: 'Не смог узнать, что это за фильм 🤔' });
+    return;
+  }
+
+  const title = titles[0];
+  let results;
+  try {
+    results = await searchMulti(title);
+  } catch (err) {
+    results = [];
+  }
+
+  if (!results || results.length === 0) {
+    await tg('sendMessage', { chat_id: chatId, text: `Похоже, это «${title}», но не нашёл карточку в базе TMDB.` });
+    return;
+  }
+
+  const item = formatResult(results[0]);
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: `Похоже, это: «${item.title}»${item.year ? ` (${item.year})` : ''}`,
+  });
+  await sendMovieCard(chatId, item);
 }
 
 // Приводит строку к простому виду для сравнения ("Матрица!" -> "матрица")
@@ -301,7 +489,7 @@ async function handleCallback(callback) {
   });
 }
 
-// Общая логика сохранения фильма/сериала в базу — используется и из /ad, и из кнопки
+// Общая логика сохранения фильма/сериала в базу
 async function saveToCollection(mediaType, tmdbId, telegramId) {
   const { data: existing } = await supabase
     .from('movies')

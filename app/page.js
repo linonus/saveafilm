@@ -75,6 +75,14 @@ function ChevronIcon({ open }) {
   );
 }
 
+function SmallChevronDown() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
 function getInitData() {
   if (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) {
     return window.Telegram.WebApp.initData;
@@ -97,6 +105,17 @@ function displayName(person) {
   if (person.first_name) return person.first_name;
   if (person.username) return `@${person.username}`;
   return `id${person.telegram_id}`;
+}
+
+// Имя + ник в две строки — чтобы карточка друга выглядела одинаково
+// аккуратно и с коротким, и с длинным ником
+function FriendLabel({ person }) {
+  return (
+    <div className={styles.friendRowText}>
+      <span className={styles.friendRowName}>{displayName(person)}</span>
+      {person?.username && <span className={styles.friendRowSub}>@{person.username}</span>}
+    </div>
+  );
 }
 
 function movieKey(m) {
@@ -164,6 +183,7 @@ export default function Home() {
   const [viewingFriendId, setViewingFriendId] = useState(''); // '' | 'all' | id
   const [filterYear, setFilterYear] = useState('');
   const [filterGenre, setFilterGenre] = useState('');
+  const [openPicker, setOpenPicker] = useState(null); // null | 'friend' | 'year' | 'genre'
 
   useEffect(() => {
     let cancelled = false;
@@ -458,6 +478,34 @@ export default function Home() {
     ? displayName(friendProfileById[viewingFriendId])
     : '';
 
+  const friendPillLabel = isAllView ? 'Все друзья' : isOwnView ? 'Я' : currentFriendLabel;
+
+  const pickerConfig = {
+    friend: {
+      title: 'Чья коллекция',
+      current: viewingFriendId,
+      onSelect: selectFriendView,
+      options: [
+        { value: '', label: 'Я' },
+        { value: 'all', label: 'Все друзья' },
+        ...(profile?.friends || []).map((f) => ({ value: String(f.telegram_id), label: displayName(f) })),
+      ],
+    },
+    year: {
+      title: 'Год',
+      current: filterYear,
+      onSelect: setFilterYear,
+      options: [{ value: '', label: 'Все года' }, ...yearOptions.map((y) => ({ value: y, label: y }))],
+    },
+    genre: {
+      title: 'Жанр',
+      current: filterGenre,
+      onSelect: setFilterGenre,
+      options: [{ value: '', label: 'Все жанры' }, ...genreOptions.map((g) => ({ value: g, label: g }))],
+    },
+  };
+  const activePicker = openPicker ? pickerConfig[openPicker] : null;
+
   if (appLoading) {
     return (
       <div className={styles.splash}>
@@ -573,49 +621,31 @@ export default function Home() {
           {(profile?.friends?.length > 0 || yearOptions.length > 0 || genreOptions.length > 0) && (
             <div className={styles.filterBar}>
               {profile?.friends?.length > 0 && (
-                <div className={styles.filterChip}>
-                  <select
-                    className={styles.filterSelect}
-                    value={viewingFriendId}
-                    onChange={(e) => selectFriendView(e.target.value)}
-                  >
-                    <option value="">Я</option>
-                    <option value="all">Все друзья</option>
-                    {profile.friends.map((f) => (
-                      <option key={f.telegram_id} value={f.telegram_id}>
-                        {displayName(f)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <button
+                  className={`${styles.filterPillBtn} ${viewingFriendId ? styles.filterPillBtnActive : ''}`}
+                  onClick={() => setOpenPicker('friend')}
+                >
+                  {friendPillLabel}
+                  <SmallChevronDown />
+                </button>
               )}
               {yearOptions.length > 0 && (
-                <div className={styles.filterChip}>
-                  <select
-                    className={styles.filterSelect}
-                    value={filterYear}
-                    onChange={(e) => setFilterYear(e.target.value)}
-                  >
-                    <option value="">Год: все</option>
-                    {yearOptions.map((y) => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
-                </div>
+                <button
+                  className={`${styles.filterPillBtn} ${filterYear ? styles.filterPillBtnActive : ''}`}
+                  onClick={() => setOpenPicker('year')}
+                >
+                  {filterYear || 'Год: все'}
+                  <SmallChevronDown />
+                </button>
               )}
               {genreOptions.length > 0 && (
-                <div className={styles.filterChip}>
-                  <select
-                    className={styles.filterSelect}
-                    value={filterGenre}
-                    onChange={(e) => setFilterGenre(e.target.value)}
-                  >
-                    <option value="">Жанр: все</option>
-                    {genreOptions.map((g) => (
-                      <option key={g} value={g}>{g}</option>
-                    ))}
-                  </select>
-                </div>
+                <button
+                  className={`${styles.filterPillBtn} ${filterGenre ? styles.filterPillBtnActive : ''}`}
+                  onClick={() => setOpenPicker('genre')}
+                >
+                  {filterGenre || 'Жанр: все'}
+                  <SmallChevronDown />
+                </button>
               )}
             </div>
           )}
@@ -724,7 +754,7 @@ export default function Home() {
                 <div className={styles.friendRow} key={r.request_id}>
                   <div className={styles.friendRowLeft}>
                     <Avatar person={r} size={32} />
-                    <span className={styles.friendRowName}>{displayName(r)}</span>
+                    <FriendLabel person={r} />
                   </div>
                   <div className={styles.friendRowActions}>
                     <button
@@ -752,7 +782,7 @@ export default function Home() {
                 <div className={styles.friendRow} key={r.request_id}>
                   <div className={styles.friendRowLeft}>
                     <Avatar person={r} size={32} />
-                    <span className={styles.friendRowName}>{displayName(r)}</span>
+                    <FriendLabel person={r} />
                   </div>
                   <button className={styles.declineBtn} onClick={() => removeFriend(r.request_id)}>
                     Отменить
@@ -776,7 +806,7 @@ export default function Home() {
                 <div className={styles.friendRow} key={f.request_id}>
                   <div className={styles.friendRowLeft}>
                     <Avatar person={f} size={32} />
-                    <span className={styles.friendRowName}>{displayName(f)}</span>
+                    <FriendLabel person={f} />
                   </div>
                   <button className={styles.declineBtn} onClick={() => removeFriend(f.request_id)}>
                     Удалить
@@ -801,6 +831,32 @@ export default function Home() {
           >
             Удалить
           </button>
+        </div>
+      )}
+
+      {activePicker && (
+        <div className={styles.modalBackdrop} onClick={() => setOpenPicker(null)}>
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <button className={styles.modalClose} onClick={() => setOpenPicker(null)}>
+              ✕
+            </button>
+            <div className={styles.pickerTitle}>{activePicker.title}</div>
+            <div className={styles.pickerList}>
+              {activePicker.options.map((opt) => (
+                <button
+                  key={opt.value || 'none'}
+                  className={`${styles.pickerOption} ${opt.value === activePicker.current ? styles.pickerOptionActive : ''}`}
+                  onClick={() => {
+                    activePicker.onSelect(opt.value);
+                    setOpenPicker(null);
+                  }}
+                >
+                  {opt.label}
+                  {opt.value === activePicker.current && <CheckIcon />}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

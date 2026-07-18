@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import styles from './page.module.css';
+
+const BOT_USERNAME = 'saveafilm_bot';
 
 function SearchIcon() {
   return (
@@ -16,6 +18,15 @@ function StarIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor">
       <path d="M12 2.5l2.94 6.34 6.98.7-5.24 4.77 1.5 6.9L12 17.9l-6.18 3.31 1.5-6.9L2.08 9.54l6.98-.7z" />
+    </svg>
+  );
+}
+
+function PersonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20c0-4 3.5-6 8-6s8 2 8 6" />
     </svg>
   );
 }
@@ -57,7 +68,7 @@ function getInitData() {
   return '';
 }
 
-// Обёртка над fetch — добавляет заголовок с подписью Telegram ко всем запросам к /api/movies
+// Обёртка над fetch — добавляет заголовок с подписью Telegram ко всем запросам
 function apiFetch(url, options = {}) {
   return fetch(url, {
     ...options,
@@ -68,10 +79,17 @@ function apiFetch(url, options = {}) {
   });
 }
 
+function displayName(person) {
+  if (!person) return '';
+  if (person.first_name) return person.first_name;
+  if (person.username) return `@${person.username}`;
+  return `id${person.telegram_id}`;
+}
+
 export default function Home() {
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('favorites'); // 'favorites' | 'search'
+  const [tab, setTab] = useState('favorites'); // 'favorites' | 'search' | 'profile'
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [addingId, setAddingId] = useState(null);
@@ -82,18 +100,31 @@ export default function Home() {
   const [authError, setAuthError] = useState(false);
   const debounceRef = useRef(null);
 
+  // Друзья и профиль
+  const [profile, setProfile] = useState(null); // { me, friends, incoming, outgoing }
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [friendUsername, setFriendUsername] = useState('');
+  const [friendMsg, setFriendMsg] = useState('');
+
+  // Просмотр чужого избранного + фильтры
+  const [viewingFriendId, setViewingFriendId] = useState(''); // '' = своё
+  const [filterYear, setFilterYear] = useState('');
+  const [filterGenre, setFilterGenre] = useState('');
+
   useEffect(() => {
     if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
       window.Telegram.WebApp.ready();
       window.Telegram.WebApp.expand();
     }
-    loadMovies();
+    loadMovies('');
+    loadProfile();
   }, []);
 
-  async function loadMovies() {
+  async function loadMovies(friendId) {
     setLoading(true);
     try {
-      const res = await apiFetch('/api/movies');
+      const url = friendId ? `/api/movies?friend=${friendId}` : '/api/movies';
+      const res = await apiFetch(url);
       if (res.status === 401) {
         setAuthError(true);
         setMovies([]);
@@ -107,6 +138,29 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadProfile() {
+    setProfileLoading(true);
+    try {
+      const res = await apiFetch('/api/friends');
+      if (res.status === 401) return;
+      const data = await res.json();
+      setProfile(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setProfileLoading(false);
+    }
+  }
+
+  function selectFriendView(friendId) {
+    setViewingFriendId(friendId);
+    setFilterYear('');
+    setFilterGenre('');
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    loadMovies(friendId);
   }
 
   const onQueryChange = useCallback((value) => {
@@ -140,7 +194,8 @@ export default function Home() {
       if (res.ok) {
         setQuery('');
         setSearchResults([]);
-        await loadMovies();
+        setViewingFriendId('');
+        await loadMovies('');
         setTab('favorites');
       }
     } catch (err) {
@@ -150,7 +205,6 @@ export default function Home() {
     }
   }
 
-  // Удаление одного фильма (из модалки) — сначала анимация, потом запрос
   function deleteMovie(id) {
     setSelected(null);
     setRemovingIds((prev) => new Set(prev).add(id));
@@ -169,7 +223,6 @@ export default function Home() {
     }, 420);
   }
 
-  // Массовое удаление из режима выбора
   function deleteSelected() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
@@ -213,13 +266,103 @@ export default function Home() {
     setSelected(m);
   }
 
+  // Друзья: заявки
+  async function sendFriendRequest() {
+    const username = friendUsername.trim();
+    if (!username) return;
+    setFriendMsg('');
+    try {
+      const res = await apiFetch('/api/friends', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setFriendMsg(`Заявка отправлена: ${displayName(data.target)}`);
+        setFriendUsername('');
+        await loadProfile();
+      } else if (data.error === 'user_not_found') {
+        setFriendMsg('Такого пользователя нет — он ещё не открывал приложение или не писал боту');
+      } else if (data.error === 'already_exists') {
+        setFriendMsg(data.status === 'accepted' ? 'Уже в друзьях' : 'Заявка уже отправлена');
+      } else if (data.error === 'self') {
+        setFriendMsg('Это твой собственный ник :)');
+      } else {
+        setFriendMsg('Не получилось отправить заявку');
+      }
+    } catch (err) {
+      console.error(err);
+      setFriendMsg('Не получилось отправить заявку');
+    }
+  }
+
+  async function respondRequest(requestId, action) {
+    try {
+      await apiFetch('/api/friends', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: requestId, action }),
+      });
+      await loadProfile();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function removeFriend(requestId) {
+    try {
+      await apiFetch(`/api/friends?id=${requestId}`, { method: 'DELETE' });
+      if (viewingFriendId) selectFriendView('');
+      await loadProfile();
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function shareInviteLink() {
+    const myId = profile?.me?.telegram_id;
+    if (!myId) return;
+    const link = `https://t.me/${BOT_USERNAME}?start=addfriend_${myId}`;
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(
+      'Го сохранять фильмы вместе в Save a Film 🎬'
+    )}`;
+    if (typeof window !== 'undefined' && window.Telegram?.WebApp?.openTelegramLink) {
+      window.Telegram.WebApp.openTelegramLink(shareUrl);
+    } else if (typeof window !== 'undefined') {
+      window.open(shareUrl, '_blank');
+    }
+  }
+
+  // Опции для фильтров считаем из текущего списка фильмов
+  const yearOptions = useMemo(() => {
+    const years = new Set(movies.map((m) => m.year).filter(Boolean));
+    return Array.from(years).sort((a, b) => b.localeCompare(a));
+  }, [movies]);
+
+  const genreOptions = useMemo(() => {
+    const genres = new Set();
+    movies.forEach((m) => (m.genres || []).forEach((g) => genres.add(g)));
+    return Array.from(genres).sort((a, b) => a.localeCompare(b, 'ru'));
+  }, [movies]);
+
+  const filteredMovies = useMemo(() => {
+    return movies.filter((m) => {
+      if (filterYear && m.year !== filterYear) return false;
+      if (filterGenre && !(m.genres || []).includes(filterGenre)) return false;
+      return true;
+    });
+  }, [movies, filterYear, filterGenre]);
+
+  const isOwnView = !viewingFriendId;
+
   return (
     <div className={styles.page}>
       <div className={styles.header}>
         <div className={styles.headerLeft}>
           <h1 className={`marquee ${styles.title}`}>SAVE A FILM</h1>
         </div>
-        {tab === 'favorites' && movies.length > 0 && (
+        {tab === 'favorites' && isOwnView && movies.length > 0 && (
           <div className={styles.headerLeft}>
             <span className={styles.count}>{movies.length} в избранном</span>
             <button
@@ -230,6 +373,11 @@ export default function Home() {
               {selectMode ? <CloseIcon /> : <TrashIcon />}
             </button>
           </div>
+        )}
+        {tab === 'favorites' && !isOwnView && (
+          <span className={styles.count}>
+            {filteredMovies.length} у {displayName(profile?.friends?.find((f) => String(f.telegram_id) === String(viewingFriendId)))}
+          </span>
         )}
       </div>
 
@@ -293,15 +441,66 @@ export default function Home() {
 
       {tab === 'favorites' && (
         <>
-          {!loading && movies.length === 0 && (
+          {(profile?.friends?.length > 0 || yearOptions.length > 0 || genreOptions.length > 0) && (
+            <div className={styles.filterBar}>
+              {profile?.friends?.length > 0 && (
+                <select
+                  className={styles.filterSelect}
+                  value={viewingFriendId}
+                  onChange={(e) => selectFriendView(e.target.value)}
+                >
+                  <option value="">Я</option>
+                  {profile.friends.map((f) => (
+                    <option key={f.telegram_id} value={f.telegram_id}>
+                      {displayName(f)}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {yearOptions.length > 0 && (
+                <select
+                  className={styles.filterSelect}
+                  value={filterYear}
+                  onChange={(e) => setFilterYear(e.target.value)}
+                >
+                  <option value="">Год: все</option>
+                  {yearOptions.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              )}
+              {genreOptions.length > 0 && (
+                <select
+                  className={styles.filterSelect}
+                  value={filterGenre}
+                  onChange={(e) => setFilterGenre(e.target.value)}
+                >
+                  <option value="">Жанр: все</option>
+                  {genreOptions.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {!loading && filteredMovies.length === 0 && (
             <div className={styles.empty}>
-              <div className={`marquee ${styles.emptyTitle}`}>Зал пуст</div>
-              <p>Найди фильм во вкладке «Поиск» внизу — и он появится здесь ⭐</p>
+              <div className={`marquee ${styles.emptyTitle}`}>
+                {movies.length === 0 ? 'Зал пуст' : 'Ничего не найдено'}
+              </div>
+              <p>
+                {movies.length === 0
+                  ? isOwnView
+                    ? 'Найди фильм во вкладке «Поиск» внизу — и он появится здесь ⭐'
+                    : 'У этого друга пока нет фильмов в избранном'
+                  : 'Попробуй сбросить фильтры'}
+              </p>
             </div>
           )}
 
           <div className={styles.grid}>
-            {movies.map((m) => {
+            {filteredMovies.map((m) => {
               const isSelected = selectedIds.has(m.id);
               const isRemoving = removingIds.has(m.id);
               return (
@@ -314,7 +513,7 @@ export default function Home() {
                   key={m.id}
                   onClick={() => onPosterClick(m)}
                 >
-                  {selectMode && (
+                  {selectMode && isOwnView && (
                     <div className={styles.selectBadge}>
                       <CheckIcon />
                     </div>
@@ -333,6 +532,100 @@ export default function Home() {
             })}
           </div>
         </>
+      )}
+
+      {tab === 'profile' && (
+        <div className={styles.profileWrap}>
+          <div className={styles.profileCard}>
+            <div className={styles.profileAvatar}>
+              {(profile?.me?.first_name || '?').slice(0, 1).toUpperCase()}
+            </div>
+            <div>
+              <div className={styles.profileName}>{displayName(profile?.me)}</div>
+              {profile?.me?.username && (
+                <div className={styles.profileUsername}>@{profile.me.username}</div>
+              )}
+            </div>
+          </div>
+
+          <div className={styles.inviteCard}>
+            <div className={styles.inviteTitle}>Сохраняйте фильмы вместе</div>
+            <p className={styles.inviteText}>
+              Позови друга — сможете смотреть избранное друг друга и фильтровать по годам и жанрам.
+            </p>
+            <button className={styles.inviteBtn} onClick={shareInviteLink}>
+              Пригласить друга
+            </button>
+          </div>
+
+          <div className={styles.sectionLabel}>Добавить по нику</div>
+          <div className={styles.addFriendRow}>
+            <input
+              className={styles.searchInput}
+              placeholder="username без @"
+              value={friendUsername}
+              onChange={(e) => setFriendUsername(e.target.value)}
+            />
+            <button className={styles.addBtn} onClick={sendFriendRequest}>
+              Отправить
+            </button>
+          </div>
+          {friendMsg && <div className={styles.friendMsg}>{friendMsg}</div>}
+
+          {profile?.incoming?.length > 0 && (
+            <>
+              <div className={styles.sectionLabel}>Заявки в друзья</div>
+              {profile.incoming.map((r) => (
+                <div className={styles.friendRow} key={r.request_id}>
+                  <span className={styles.friendRowName}>{displayName(r)}</span>
+                  <div className={styles.friendRowActions}>
+                    <button
+                      className={styles.acceptBtn}
+                      onClick={() => respondRequest(r.request_id, 'accept')}
+                    >
+                      Принять
+                    </button>
+                    <button
+                      className={styles.declineBtn}
+                      onClick={() => respondRequest(r.request_id, 'decline')}
+                    >
+                      Отклонить
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+
+          {profile?.outgoing?.length > 0 && (
+            <>
+              <div className={styles.sectionLabel}>Ожидают подтверждения</div>
+              {profile.outgoing.map((r) => (
+                <div className={styles.friendRow} key={r.request_id}>
+                  <span className={styles.friendRowName}>{displayName(r)}</span>
+                  <button className={styles.declineBtn} onClick={() => removeFriend(r.request_id)}>
+                    Отменить
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+
+          <div className={styles.sectionLabel}>
+            Друзья {profile?.friends?.length ? `(${profile.friends.length})` : ''}
+          </div>
+          {!profileLoading && (!profile?.friends || profile.friends.length === 0) && (
+            <p className={styles.inviteText}>Пока никого нет — пригласи первого друга выше 👆</p>
+          )}
+          {profile?.friends?.map((f) => (
+            <div className={styles.friendRow} key={f.request_id}>
+              <span className={styles.friendRowName}>{displayName(f)}</span>
+              <button className={styles.declineBtn} onClick={() => removeFriend(f.request_id)}>
+                Удалить
+              </button>
+            </div>
+          ))}
+        </div>
       )}
 
       </>
@@ -390,9 +683,11 @@ export default function Home() {
               >
                 🔎 Искать в Google
               </a>
-              <button className={styles.deleteBtn} onClick={() => deleteMovie(selected.id)}>
-                Удалить из избранного
-              </button>
+              {isOwnView && (
+                <button className={styles.deleteBtn} onClick={() => deleteMovie(selected.id)}>
+                  Удалить из избранного
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -413,8 +708,14 @@ export default function Home() {
           <StarIcon />
           Избранное
         </button>
+        <button
+          className={`${styles.navBtn} ${tab === 'profile' ? styles.navBtnActive : ''}`}
+          onClick={() => setTab('profile')}
+        >
+          <PersonIcon />
+          Профиль
+        </button>
       </nav>
     </div>
   );
-    }
-    
+}

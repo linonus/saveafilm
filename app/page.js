@@ -884,6 +884,9 @@ export default function Home() {
                     </>
                   ) : null}
                 </div>
+                {selected.genres && selected.genres.length > 0 && (
+                  <div className={styles.modalGenres}>{selected.genres.join(', ')}</div>
+                )}
               </div>
             </div>
             <div className={styles.descCard}>

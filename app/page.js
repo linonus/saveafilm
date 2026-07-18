@@ -48,6 +48,26 @@ function CheckIcon() {
   );
 }
 
+// Достаёт initData из Telegram WebApp — это подписанная строка, по которой
+// сервер узнаёт, какой именно пользователь Telegram сделал запрос
+function getInitData() {
+  if (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) {
+    return window.Telegram.WebApp.initData;
+  }
+  return '';
+}
+
+// Обёртка над fetch — добавляет заголовок с подписью Telegram ко всем запросам к /api/movies
+function apiFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      'X-Telegram-Init-Data': getInitData(),
+    },
+  });
+}
+
 export default function Home() {
   const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +79,7 @@ export default function Home() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [removingIds, setRemovingIds] = useState(new Set());
+  const [authError, setAuthError] = useState(false);
   const debounceRef = useRef(null);
 
   useEffect(() => {
@@ -72,7 +93,13 @@ export default function Home() {
   async function loadMovies() {
     setLoading(true);
     try {
-      const res = await fetch('/api/movies');
+      const res = await apiFetch('/api/movies');
+      if (res.status === 401) {
+        setAuthError(true);
+        setMovies([]);
+        return;
+      }
+      setAuthError(false);
       const data = await res.json();
       setMovies(data.movies || []);
     } catch (err) {
@@ -105,7 +132,7 @@ export default function Home() {
   async function addMovie(item) {
     setAddingId(item.tmdb_id);
     try {
-      const res = await fetch('/api/movies', {
+      const res = await apiFetch('/api/movies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tmdb_id: item.tmdb_id, media_type: item.media_type }),
@@ -129,7 +156,7 @@ export default function Home() {
     setRemovingIds((prev) => new Set(prev).add(id));
     setTimeout(async () => {
       try {
-        await fetch(`/api/movies?id=${id}`, { method: 'DELETE' });
+        await apiFetch(`/api/movies?id=${id}`, { method: 'DELETE' });
       } catch (err) {
         console.error(err);
       }
@@ -155,7 +182,7 @@ export default function Home() {
     setSelectedIds(new Set());
     setTimeout(async () => {
       try {
-        await Promise.all(ids.map((id) => fetch(`/api/movies?id=${id}`, { method: 'DELETE' })));
+        await Promise.all(ids.map((id) => apiFetch(`/api/movies?id=${id}`, { method: 'DELETE' })));
       } catch (err) {
         console.error(err);
       }
@@ -206,6 +233,18 @@ export default function Home() {
         )}
       </div>
 
+      {authError && (
+        <div className={styles.empty}>
+          <div className={`marquee ${styles.emptyTitle}`}>Открой через бота</div>
+          <p>
+            Это приложение показывает личную коллекцию каждого пользователя, поэтому
+            оно должно быть открыто изнутри Telegram — через кнопку в чате с ботом.
+          </p>
+        </div>
+      )}
+
+      {!authError && (
+      <>
       {tab === 'search' && (
         <div className={styles.searchWrap}>
           <input
@@ -296,6 +335,9 @@ export default function Home() {
         </>
       )}
 
+      </>
+      )}
+
       {selectMode && (
         <div className={styles.selectBar}>
           <span className={styles.selectBarCount}>Выбрано: {selectedIds.size}</span>
@@ -374,4 +416,5 @@ export default function Home() {
       </nav>
     </div>
   );
-}
+    }
+    

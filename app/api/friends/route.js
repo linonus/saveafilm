@@ -4,12 +4,14 @@ import { getTelegramUser } from '../../../lib/telegramAuth';
 export const dynamic = 'force-dynamic';
 
 async function upsertUser(user) {
-  await supabase.from('users').upsert({
+  const payload = {
     telegram_id: user.id,
     username: user.username || null,
     first_name: user.first_name || null,
     updated_at: new Date().toISOString(),
-  });
+  };
+  if (user.photo_url) payload.photo_url = user.photo_url;
+  await supabase.from('users').upsert(payload);
 }
 
 // Список друзей + входящие/исходящие заявки текущего пользователя
@@ -39,7 +41,7 @@ export async function GET(request) {
   if (otherIds.size > 0) {
     const { data: profiles } = await supabase
       .from('users')
-      .select('telegram_id, username, first_name')
+      .select('telegram_id, username, first_name, photo_url')
       .in('telegram_id', Array.from(otherIds));
     (profiles || []).forEach((p) => {
       profileById[p.telegram_id] = p;
@@ -63,7 +65,12 @@ export async function GET(request) {
   });
 
   return Response.json({
-    me: { telegram_id: userId, username: user.username || null, first_name: user.first_name || null },
+    me: {
+      telegram_id: userId,
+      username: user.username || null,
+      first_name: user.first_name || null,
+      photo_url: user.photo_url || null,
+    },
     friends,
     incoming,
     outgoing,
@@ -87,7 +94,7 @@ export async function POST(request) {
 
   const { data: target } = await supabase
     .from('users')
-    .select('telegram_id, username, first_name')
+    .select('telegram_id, username, first_name, photo_url')
     .ilike('username', usernameRaw)
     .maybeSingle();
 

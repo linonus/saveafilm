@@ -59,8 +59,22 @@ function CheckIcon() {
   );
 }
 
-// Достаёт initData из Telegram WebApp — это подписанная строка, по которой
-// сервер узнаёт, какой именно пользователь Telegram сделал запрос
+function ChevronIcon({ open }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}
+    >
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
 function getInitData() {
   if (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) {
     return window.Telegram.WebApp.initData;
@@ -68,7 +82,6 @@ function getInitData() {
   return '';
 }
 
-// Обёртка над fetch — добавляет заголовок с подписью Telegram ко всем запросам
 function apiFetch(url, options = {}) {
   return fetch(url, {
     ...options,
@@ -86,62 +99,137 @@ function displayName(person) {
   return `id${person.telegram_id}`;
 }
 
+function movieKey(m) {
+  return `${m.tmdb_id}_${m.media_type}`;
+}
+
+// Аватарка — фото из Telegram, если есть, иначе кружок с первой буквой имени
+function Avatar({ person, size = 32, className = '' }) {
+  const initial = (person?.first_name || person?.username || '?').slice(0, 1).toUpperCase();
+  const style = { width: size, height: size, fontSize: Math.max(11, size * 0.42) };
+  if (person?.photo_url) {
+    return (
+      <img
+        src={person.photo_url}
+        alt=""
+        className={`${styles.avatarImg} ${className}`}
+        style={style}
+      />
+    );
+  }
+  return (
+    <div className={`${styles.avatarFallback} ${className}`} style={style}>
+      {initial}
+    </div>
+  );
+}
+
+// Группирует фильмы друзей по tmdb_id+media_type, собирая владельцев
+function groupByMovie(rawMovies) {
+  const map = new Map();
+  rawMovies.forEach((m) => {
+    const key = movieKey(m);
+    if (!map.has(key)) {
+      map.set(key, { ...m, ownerIds: [m.telegram_id] });
+    } else {
+      map.get(key).ownerIds.push(m.telegram_id);
+    }
+  });
+  return Array.from(map.values());
+}
+
 export default function Home() {
-  const [movies, setMovies] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [appLoading, setAppLoading] = useState(true);
+  const [authError, setAuthError] = useState(false);
+
+  const [myMovies, setMyMovies] = useState([]);
+  const [friendMovies, setFriendMovies] = useState([]);
+  const [friendMoviesLoading, setFriendMoviesLoading] = useState(false);
+
   const [tab, setTab] = useState('favorites'); // 'favorites' | 'search' | 'profile'
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [addingId, setAddingId] = useState(null);
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(null); // фильм из коллекции или из поиска
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [removingIds, setRemovingIds] = useState(new Set());
-  const [authError, setAuthError] = useState(false);
   const debounceRef = useRef(null);
 
-  // Друзья и профиль
   const [profile, setProfile] = useState(null); // { me, friends, incoming, outgoing }
-  const [profileLoading, setProfileLoading] = useState(false);
+  const [friendsOpen, setFriendsOpen] = useState(false);
   const [friendUsername, setFriendUsername] = useState('');
   const [friendMsg, setFriendMsg] = useState('');
 
-  // Просмотр чужого избранного + фильтры
-  const [viewingFriendId, setViewingFriendId] = useState(''); // '' = своё
+  const [viewingFriendId, setViewingFriendId] = useState(''); // '' | 'all' | id
   const [filterYear, setFilterYear] = useState('');
   const [filterGenre, setFilterGenre] = useState('');
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
-      window.Telegram.WebApp.ready();
-      window.Telegram.WebApp.expand();
+    let cancelled = false;
+
+    // Скрипт Telegram иногда отдаёт initData не сразу в момент монтирования —
+    // ждём до 2 секунд, проверяя каждые 100мс, прежде чем стучаться в API
+    function tryInit(retriesLeft) {
+      if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
+        window.Telegram.WebApp.ready();
+        window.Telegram.WebApp.expand();
+      }
+      if (cancelled) return;
+
+      const initData = getInitData();
+      if (initData || retriesLeft <= 0) {
+        bootstrap();
+        return;
+      }
+      setTimeout(() => tryInit(retriesLeft - 1), 100);
     }
-    loadMovies('');
-    loadProfile();
+
+    async function bootstrap() {
+      const res = await loadMyMovies();
+      await loadProfile();
+      if (!cancelled) setAppLoading(false);
+    }
+
+    tryInit(20);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  async function loadMovies(friendId) {
-    setLoading(true);
+  async function loadMyMovies() {
     try {
-      const url = friendId ? `/api/movies?friend=${friendId}` : '/api/movies';
-      const res = await apiFetch(url);
+      const res = await apiFetch('/api/movies');
       if (res.status === 401) {
         setAuthError(true);
-        setMovies([]);
         return;
       }
       setAuthError(false);
       const data = await res.json();
-      setMovies(data.movies || []);
+      setMyMovies(data.movies || []);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function loadFriendMovies(friendId) {
+    setFriendMoviesLoading(true);
+    try {
+      const res = await apiFetch(`/api/movies?friend=${friendId}`);
+      if (res.status === 401) {
+        setAuthError(true);
+        return;
+      }
+      const data = await res.json();
+      setFriendMovies(data.movies || []);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      setFriendMoviesLoading(false);
     }
   }
 
   async function loadProfile() {
-    setProfileLoading(true);
     try {
       const res = await apiFetch('/api/friends');
       if (res.status === 401) return;
@@ -149,18 +237,16 @@ export default function Home() {
       setProfile(data);
     } catch (err) {
       console.error(err);
-    } finally {
-      setProfileLoading(false);
     }
   }
 
-  function selectFriendView(friendId) {
-    setViewingFriendId(friendId);
+  function selectFriendView(value) {
+    setViewingFriendId(value);
     setFilterYear('');
     setFilterGenre('');
     setSelectMode(false);
     setSelectedIds(new Set());
-    loadMovies(friendId);
+    if (value) loadFriendMovies(value);
   }
 
   const onQueryChange = useCallback((value) => {
@@ -192,11 +278,8 @@ export default function Home() {
         body: JSON.stringify({ tmdb_id: item.tmdb_id, media_type: item.media_type }),
       });
       if (res.ok) {
-        setQuery('');
-        setSearchResults([]);
-        setViewingFriendId('');
-        await loadMovies('');
-        setTab('favorites');
+        await loadMyMovies();
+        setSelected(null);
       }
     } catch (err) {
       console.error(err);
@@ -214,7 +297,7 @@ export default function Home() {
       } catch (err) {
         console.error(err);
       }
-      setMovies((prev) => prev.filter((m) => m.id !== id));
+      setMyMovies((prev) => prev.filter((m) => m.id !== id));
       setRemovingIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
@@ -239,7 +322,7 @@ export default function Home() {
       } catch (err) {
         console.error(err);
       }
-      setMovies((prev) => prev.filter((m) => !ids.includes(m.id)));
+      setMyMovies((prev) => prev.filter((m) => !ids.includes(m.id)));
       setRemovingIds((prev) => {
         const next = new Set(prev);
         ids.forEach((id) => next.delete(id));
@@ -266,7 +349,6 @@ export default function Home() {
     setSelected(m);
   }
 
-  // Друзья: заявки
   async function sendFriendRequest() {
     const username = friendUsername.trim();
     if (!username) return;
@@ -334,27 +416,60 @@ export default function Home() {
     }
   }
 
-  // Опции для фильтров считаем из текущего списка фильмов
+  const isOwnView = !viewingFriendId;
+  const isAllView = viewingFriendId === 'all';
+
+  const ownKeys = useMemo(() => new Set(myMovies.map(movieKey)), [myMovies]);
+
+  const baseMovies = useMemo(() => {
+    if (isOwnView) return myMovies;
+    if (isAllView) return groupByMovie(friendMovies);
+    return friendMovies;
+  }, [isOwnView, isAllView, myMovies, friendMovies]);
+
   const yearOptions = useMemo(() => {
-    const years = new Set(movies.map((m) => m.year).filter(Boolean));
+    const years = new Set(baseMovies.map((m) => m.year).filter(Boolean));
     return Array.from(years).sort((a, b) => b.localeCompare(a));
-  }, [movies]);
+  }, [baseMovies]);
 
   const genreOptions = useMemo(() => {
     const genres = new Set();
-    movies.forEach((m) => (m.genres || []).forEach((g) => genres.add(g)));
+    baseMovies.forEach((m) => (m.genres || []).forEach((g) => genres.add(g)));
     return Array.from(genres).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [movies]);
+  }, [baseMovies]);
 
   const filteredMovies = useMemo(() => {
-    return movies.filter((m) => {
+    return baseMovies.filter((m) => {
       if (filterYear && m.year !== filterYear) return false;
       if (filterGenre && !(m.genres || []).includes(filterGenre)) return false;
       return true;
     });
-  }, [movies, filterYear, filterGenre]);
+  }, [baseMovies, filterYear, filterGenre]);
 
-  const isOwnView = !viewingFriendId;
+  const friendProfileById = useMemo(() => {
+    const map = {};
+    (profile?.friends || []).forEach((f) => {
+      map[f.telegram_id] = f;
+    });
+    return map;
+  }, [profile]);
+
+  const currentFriendLabel = viewingFriendId && !isAllView
+    ? displayName(friendProfileById[viewingFriendId])
+    : '';
+
+  if (appLoading) {
+    return (
+      <div className={styles.splash}>
+        <div className={styles.splashLogo}>
+          <span className={`marquee ${styles.splashWord} ${styles.splashSave}`}>Save</span>
+          <span className={`marquee ${styles.splashWord} ${styles.splashA}`}>A</span>
+          <span className={`marquee ${styles.splashWord} ${styles.splashFilm}`}>Film</span>
+        </div>
+        <div className={styles.spinner} />
+      </div>
+    );
+  }
 
   return (
     <div className={styles.page}>
@@ -362,9 +477,9 @@ export default function Home() {
         <div className={styles.headerLeft}>
           <h1 className={`marquee ${styles.title}`}>SAVE A FILM</h1>
         </div>
-        {tab === 'favorites' && isOwnView && movies.length > 0 && (
+        {tab === 'favorites' && isOwnView && myMovies.length > 0 && (
           <div className={styles.headerLeft}>
-            <span className={styles.count}>{movies.length} в избранном</span>
+            <span className={styles.count}>{myMovies.length} в избранном</span>
             <button
               className={`${styles.iconBtn} ${selectMode ? styles.iconBtnActive : ''}`}
               onClick={toggleSelectMode}
@@ -376,7 +491,7 @@ export default function Home() {
         )}
         {tab === 'favorites' && !isOwnView && (
           <span className={styles.count}>
-            {filteredMovies.length} у {displayName(profile?.friends?.find((f) => String(f.telegram_id) === String(viewingFriendId)))}
+            {filteredMovies.length} {isAllView ? 'у друзей' : `у ${currentFriendLabel}`}
           </span>
         )}
       </div>
@@ -405,29 +520,43 @@ export default function Home() {
 
           {searchResults.length > 0 && (
             <div className={styles.searchResults}>
-              {searchResults.map((item) => (
-                <div className={styles.searchItem} key={`${item.media_type}_${item.tmdb_id}`}>
-                  {item.poster_url ? (
-                    <img className={styles.searchPoster} src={item.poster_url} alt="" />
-                  ) : (
-                    <div className={styles.searchPoster} />
-                  )}
-                  <div className={styles.searchInfo}>
-                    <div className={styles.searchInfoTitle}>{item.title}</div>
-                    <div className={styles.searchInfoMeta}>
-                      {item.media_type === 'tv' ? 'Сериал' : 'Фильм'}
-                      {item.year ? ` · ${item.year}` : ''}
-                    </div>
-                  </div>
-                  <button
-                    className={styles.addBtn}
-                    disabled={addingId === item.tmdb_id}
-                    onClick={() => addMovie(item)}
+              {searchResults.map((item) => {
+                const added = ownKeys.has(movieKey(item));
+                return (
+                  <div
+                    className={styles.searchItem}
+                    key={`${item.media_type}_${item.tmdb_id}`}
+                    onClick={() => setSelected({ ...item, _fromSearch: true })}
                   >
-                    {addingId === item.tmdb_id ? '…' : '+ Добавить'}
-                  </button>
-                </div>
-              ))}
+                    {item.poster_url ? (
+                      <img className={styles.searchPoster} src={item.poster_url} alt="" />
+                    ) : (
+                      <div className={styles.searchPoster} />
+                    )}
+                    <div className={styles.searchInfo}>
+                      <div className={styles.searchInfoTitle}>{item.title}</div>
+                      <div className={styles.searchInfoMeta}>
+                        {item.media_type === 'tv' ? 'Сериал' : 'Фильм'}
+                        {item.year ? ` · ${item.year}` : ''}
+                      </div>
+                    </div>
+                    {added ? (
+                      <span className={styles.addedBadge}>Добавлено</span>
+                    ) : (
+                      <button
+                        className={styles.addBtn}
+                        disabled={addingId === item.tmdb_id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          addMovie(item);
+                        }}
+                      >
+                        {addingId === item.tmdb_id ? '…' : '+ Добавить'}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -444,56 +573,63 @@ export default function Home() {
           {(profile?.friends?.length > 0 || yearOptions.length > 0 || genreOptions.length > 0) && (
             <div className={styles.filterBar}>
               {profile?.friends?.length > 0 && (
-                <select
-                  className={styles.filterSelect}
-                  value={viewingFriendId}
-                  onChange={(e) => selectFriendView(e.target.value)}
-                >
-                  <option value="">Я</option>
-                  {profile.friends.map((f) => (
-                    <option key={f.telegram_id} value={f.telegram_id}>
-                      {displayName(f)}
-                    </option>
-                  ))}
-                </select>
+                <div className={styles.filterChip}>
+                  <select
+                    className={styles.filterSelect}
+                    value={viewingFriendId}
+                    onChange={(e) => selectFriendView(e.target.value)}
+                  >
+                    <option value="">Я</option>
+                    <option value="all">Все друзья</option>
+                    {profile.friends.map((f) => (
+                      <option key={f.telegram_id} value={f.telegram_id}>
+                        {displayName(f)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               )}
               {yearOptions.length > 0 && (
-                <select
-                  className={styles.filterSelect}
-                  value={filterYear}
-                  onChange={(e) => setFilterYear(e.target.value)}
-                >
-                  <option value="">Год: все</option>
-                  {yearOptions.map((y) => (
-                    <option key={y} value={y}>{y}</option>
-                  ))}
-                </select>
+                <div className={styles.filterChip}>
+                  <select
+                    className={styles.filterSelect}
+                    value={filterYear}
+                    onChange={(e) => setFilterYear(e.target.value)}
+                  >
+                    <option value="">Год: все</option>
+                    {yearOptions.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
               )}
               {genreOptions.length > 0 && (
-                <select
-                  className={styles.filterSelect}
-                  value={filterGenre}
-                  onChange={(e) => setFilterGenre(e.target.value)}
-                >
-                  <option value="">Жанр: все</option>
-                  {genreOptions.map((g) => (
-                    <option key={g} value={g}>{g}</option>
-                  ))}
-                </select>
+                <div className={styles.filterChip}>
+                  <select
+                    className={styles.filterSelect}
+                    value={filterGenre}
+                    onChange={(e) => setFilterGenre(e.target.value)}
+                  >
+                    <option value="">Жанр: все</option>
+                    {genreOptions.map((g) => (
+                      <option key={g} value={g}>{g}</option>
+                    ))}
+                  </select>
+                </div>
               )}
             </div>
           )}
 
-          {!loading && filteredMovies.length === 0 && (
+          {!friendMoviesLoading && filteredMovies.length === 0 && (
             <div className={styles.empty}>
               <div className={`marquee ${styles.emptyTitle}`}>
-                {movies.length === 0 ? 'Зал пуст' : 'Ничего не найдено'}
+                {baseMovies.length === 0 ? 'Зал пуст' : 'Ничего не найдено'}
               </div>
               <p>
-                {movies.length === 0
+                {baseMovies.length === 0
                   ? isOwnView
                     ? 'Найди фильм во вкладке «Поиск» внизу — и он появится здесь ⭐'
-                    : 'У этого друга пока нет фильмов в избранном'
+                    : 'Тут пока пусто'
                   : 'Попробуй сбросить фильтры'}
               </p>
             </div>
@@ -503,6 +639,7 @@ export default function Home() {
             {filteredMovies.map((m) => {
               const isSelected = selectedIds.has(m.id);
               const isRemoving = removingIds.has(m.id);
+              const owners = isAllView ? m.ownerIds || [] : [];
               return (
                 <div
                   className={[
@@ -510,12 +647,22 @@ export default function Home() {
                     isSelected ? styles.posterCardSelected : '',
                     isRemoving ? styles.posterCardRemoving : '',
                   ].join(' ')}
-                  key={m.id}
+                  key={isAllView ? movieKey(m) : m.id}
                   onClick={() => onPosterClick(m)}
                 >
                   {selectMode && isOwnView && (
                     <div className={styles.selectBadge}>
                       <CheckIcon />
+                    </div>
+                  )}
+                  {owners.length > 0 && (
+                    <div className={styles.ownerAvatars}>
+                      {owners.slice(0, 3).map((oid) => (
+                        <Avatar key={oid} person={friendProfileById[oid]} size={22} className={styles.ownerAvatar} />
+                      ))}
+                      {owners.length > 3 && (
+                        <span className={styles.ownerMore}>+{owners.length - 3}</span>
+                      )}
                     </div>
                   )}
                   {m.poster_url ? (
@@ -537,9 +684,7 @@ export default function Home() {
       {tab === 'profile' && (
         <div className={styles.profileWrap}>
           <div className={styles.profileCard}>
-            <div className={styles.profileAvatar}>
-              {(profile?.me?.first_name || '?').slice(0, 1).toUpperCase()}
-            </div>
+            <Avatar person={profile?.me} size={52} />
             <div>
               <div className={styles.profileName}>{displayName(profile?.me)}</div>
               {profile?.me?.username && (
@@ -577,7 +722,10 @@ export default function Home() {
               <div className={styles.sectionLabel}>Заявки в друзья</div>
               {profile.incoming.map((r) => (
                 <div className={styles.friendRow} key={r.request_id}>
-                  <span className={styles.friendRowName}>{displayName(r)}</span>
+                  <div className={styles.friendRowLeft}>
+                    <Avatar person={r} size={32} />
+                    <span className={styles.friendRowName}>{displayName(r)}</span>
+                  </div>
                   <div className={styles.friendRowActions}>
                     <button
                       className={styles.acceptBtn}
@@ -602,7 +750,10 @@ export default function Home() {
               <div className={styles.sectionLabel}>Ожидают подтверждения</div>
               {profile.outgoing.map((r) => (
                 <div className={styles.friendRow} key={r.request_id}>
-                  <span className={styles.friendRowName}>{displayName(r)}</span>
+                  <div className={styles.friendRowLeft}>
+                    <Avatar person={r} size={32} />
+                    <span className={styles.friendRowName}>{displayName(r)}</span>
+                  </div>
                   <button className={styles.declineBtn} onClick={() => removeFriend(r.request_id)}>
                     Отменить
                   </button>
@@ -611,20 +762,29 @@ export default function Home() {
             </>
           )}
 
-          <div className={styles.sectionLabel}>
-            Друзья {profile?.friends?.length ? `(${profile.friends.length})` : ''}
-          </div>
-          {!profileLoading && (!profile?.friends || profile.friends.length === 0) && (
-            <p className={styles.inviteText}>Пока никого нет — пригласи первого друга выше 👆</p>
-          )}
-          {profile?.friends?.map((f) => (
-            <div className={styles.friendRow} key={f.request_id}>
-              <span className={styles.friendRowName}>{displayName(f)}</span>
-              <button className={styles.declineBtn} onClick={() => removeFriend(f.request_id)}>
-                Удалить
-              </button>
+          <button className={styles.friendsToggle} onClick={() => setFriendsOpen((v) => !v)}>
+            <span>Друзья {profile?.friends?.length ? `(${profile.friends.length})` : ''}</span>
+            <ChevronIcon open={friendsOpen} />
+          </button>
+
+          {friendsOpen && (
+            <div className={styles.friendsList}>
+              {(!profile?.friends || profile.friends.length === 0) && (
+                <p className={styles.inviteText}>Пока никого нет — пригласи первого друга выше 👆</p>
+              )}
+              {profile?.friends?.map((f) => (
+                <div className={styles.friendRow} key={f.request_id}>
+                  <div className={styles.friendRowLeft}>
+                    <Avatar person={f} size={32} />
+                    <span className={styles.friendRowName}>{displayName(f)}</span>
+                  </div>
+                  <button className={styles.declineBtn} onClick={() => removeFriend(f.request_id)}>
+                    Удалить
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 
@@ -683,10 +843,24 @@ export default function Home() {
               >
                 🔎 Искать в Google
               </a>
-              {isOwnView && (
-                <button className={styles.deleteBtn} onClick={() => deleteMovie(selected.id)}>
-                  Удалить из избранного
-                </button>
+              {selected._fromSearch ? (
+                ownKeys.has(movieKey(selected)) ? (
+                  <div className={styles.addedBadgeWide}>Уже в избранном</div>
+                ) : (
+                  <button
+                    className={styles.addBtnWide}
+                    disabled={addingId === selected.tmdb_id}
+                    onClick={() => addMovie(selected)}
+                  >
+                    {addingId === selected.tmdb_id ? 'Добавляю…' : '+ Добавить в избранное'}
+                  </button>
+                )
+              ) : (
+                isOwnView && (
+                  <button className={styles.deleteBtn} onClick={() => deleteMovie(selected.id)}>
+                    Удалить из избранного
+                  </button>
+                )
               )}
             </div>
           </div>

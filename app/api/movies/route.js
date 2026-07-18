@@ -1,11 +1,19 @@
 import { supabase } from '../../../lib/supabase';
 import { getDetails } from '../../../lib/tmdb';
+import { getTelegramUserId } from '../../../lib/telegramAuth';
+
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request) {
+  const userId = getTelegramUserId(request);
+  if (!userId) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
   const { data, error } = await supabase
     .from('movies')
     .select('*')
+    .eq('telegram_id', userId)
     .order('added_at', { ascending: false });
 
   if (error) {
@@ -15,6 +23,11 @@ export async function GET() {
 }
 
 export async function POST(request) {
+  const userId = getTelegramUserId(request);
+  if (!userId) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
   const body = await request.json();
   const { tmdb_id, media_type } = body || {};
 
@@ -27,6 +40,7 @@ export async function POST(request) {
     .select('id')
     .eq('tmdb_id', tmdb_id)
     .eq('media_type', media_type)
+    .eq('telegram_id', userId)
     .maybeSingle();
 
   if (existing) {
@@ -51,6 +65,7 @@ export async function POST(request) {
       year: item.year,
       rating: item.rating,
       google_query: item.google_query,
+      telegram_id: userId,
     })
     .select()
     .single();
@@ -63,6 +78,11 @@ export async function POST(request) {
 }
 
 export async function DELETE(request) {
+  const userId = getTelegramUserId(request);
+  if (!userId) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
 
@@ -70,7 +90,12 @@ export async function DELETE(request) {
     return Response.json({ error: 'id обязателен' }, { status: 400 });
   }
 
-  const { error } = await supabase.from('movies').delete().eq('id', id);
+  // eq('telegram_id', userId) — чтобы нельзя было удалить чужой фильм, подставив id
+  const { error } = await supabase
+    .from('movies')
+    .delete()
+    .eq('id', id)
+    .eq('telegram_id', userId);
 
   if (error) {
     return Response.json({ error: error.message }, { status: 500 });

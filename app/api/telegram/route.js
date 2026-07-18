@@ -15,6 +15,18 @@ async function tg(method, payload) {
   return res.json();
 }
 
+// Сохраняем/обновляем базовые данные о пользователе — нужно, чтобы искать
+// друзей по нику даже если человек ни разу не открывал Mini App
+async function upsertUser(from) {
+  if (!from?.id) return;
+  await supabase.from('users').upsert({
+    telegram_id: from.id,
+    username: from.username || null,
+    first_name: from.first_name || null,
+    updated_at: new Date().toISOString(),
+  });
+}
+
 export async function POST(request) {
   let update;
   try {
@@ -42,11 +54,23 @@ async function handleMessage(message) {
   const userId = message.from?.id ?? chatId;
   const text = (message.text || '').trim();
 
-  if (text === '/start') {
+  await upsertUser(message.from);
+
+  if (text === '/start' || text.startsWith('/start ')) {
+    const payload = text.slice('/start'.length).trim();
+
+    if (payload.startsWith('addfriend_')) {
+      const inviterId = parseInt(payload.slice('addfriend_'.length), 10);
+      if (inviterId && inviterId !== userId) {
+        await handleFriendInvite(chatId, userId, inviterId);
+      }
+    }
+
     await tg('sendMessage', {
       chat_id: chatId,
       text: 'Привет! Напиши название фильма или сериала — найду постер и описание. Либо сразу команду /ad Название — добавлю в избранное. А открыть коллекцию можно кнопкой ниже 👇',
       reply_markup: {
+
         inline_keyboard: [
           [{ text: '🎬 Открыть избранное', web_app: { url: APP_URL } }],
         ],
@@ -155,6 +179,44 @@ function normalize(str) {
     .toLowerCase()
     .replace(/[^a-zа-яё0-9]+/gi, '')
     .trim();
+}
+
+// Кто-то перешёл по инвайт-ссылке ?start=addfriend_<id> — создаём заявку
+// от того, кто поделился ссылкой, к тому, кто её открыл
+async function handleFriendInvite(chatId, userId, inviterId) {
+  const { data: existing } = await supabase
+    .from('friends')
+    .select('id, status')
+    .or(
+      `and(requester_id.eq.${inviterId},addressee_id.eq.${userId}),and(requester_id.eq.${userId},addressee_id.eq.${inviterId})`
+    )
+    .maybeSingle();
+
+  if (existing) {
+    if (existing.status === 'accepted') {
+      await tg('sendMessage', { chat_id: chatId, text: 'Вы уже друзья в Save a Film 🎬' });
+    }
+    return;
+  }
+
+  const { error } = await supabase.from('friends').insert({
+    requester_id: inviterId,
+    addressee_id: userId,
+    status: 'pending',
+  });
+
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: 'Вас пригласили в друзья в Save a Film! Открой приложение → вкладка «Профиль», чтобы принять заявку и увидеть общие фильмы.',
+    reply_markup: {
+      inline_keyboard: [[{ text: '🎬 Открыть приложение', web_app: { url: APP_URL } }]],
+    },
+  });
 }
 
 async function sendMovieCard(chatId, item) {
@@ -268,6 +330,7 @@ async function saveToCollection(mediaType, tmdbId, telegramId) {
     year: item.year,
     rating: item.rating,
     google_query: item.google_query,
+    genres: item.genres,
     telegram_id: telegramId,
   });
 
@@ -282,5 +345,4 @@ async function saveToCollection(mediaType, tmdbId, telegramId) {
 // Telegram иногда шлёт GET для проверки — отвечаем, чтобы не было 405 в логах
 export async function GET() {
   return Response.json({ ok: true, info: 'Telegram webhook is alive' });
-      }
-    
+}

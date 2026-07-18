@@ -5,12 +5,26 @@ import { getTelegramUser } from '../../../lib/telegramAuth';
 export const dynamic = 'force-dynamic';
 
 async function upsertUser(user) {
-  await supabase.from('users').upsert({
+  const payload = {
     telegram_id: user.id,
     username: user.username || null,
     first_name: user.first_name || null,
     updated_at: new Date().toISOString(),
-  });
+  };
+  // photo_url добавляем в апдейт, только если реально пришёл — иначе не
+  // затираем ранее сохранённое значение пустым
+  if (user.photo_url) payload.photo_url = user.photo_url;
+  await supabase.from('users').upsert(payload);
+}
+
+async function getAcceptedFriendIds(userId) {
+  const { data } = await supabase
+    .from('friends')
+    .select('requester_id, addressee_id')
+    .eq('status', 'accepted')
+    .or(`requester_id.eq.${userId},addressee_id.eq.${userId}`);
+
+  return (data || []).map((r) => (r.requester_id === userId ? r.addressee_id : r.requester_id));
 }
 
 async function areFriends(a, b) {
@@ -35,6 +49,23 @@ export async function GET(request) {
 
   const { searchParams } = new URL(request.url);
   const friendParam = searchParams.get('friend');
+
+  // Сводная лента фильмов всех друзей сразу
+  if (friendParam === 'all') {
+    const friendIds = await getAcceptedFriendIds(userId);
+    if (friendIds.length === 0) {
+      return Response.json({ movies: [], isOwn: false });
+    }
+    const { data, error } = await supabase
+      .from('movies')
+      .select('*')
+      .in('telegram_id', friendIds)
+      .order('added_at', { ascending: false });
+
+    if (error) return Response.json({ error: error.message }, { status: 500 });
+    return Response.json({ movies: data, isOwn: false });
+  }
+
   let targetId = userId;
 
   if (friendParam) {

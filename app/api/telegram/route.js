@@ -39,6 +39,7 @@ export async function POST(request) {
 
 async function handleMessage(message) {
   const chatId = message.chat.id;
+  const userId = message.from?.id ?? chatId;
   const text = (message.text || '').trim();
 
   if (text === '/start') {
@@ -66,7 +67,7 @@ async function handleMessage(message) {
       return;
     }
 
-    await handleAddCommand(chatId, query);
+    await handleAddCommand(chatId, query, userId);
     return;
   }
 
@@ -98,7 +99,7 @@ async function handleMessage(message) {
 
 // Обработка /ad: если название совпадает точно — добавляем сразу,
 // если нет — предлагаем ближайший вариант с кнопкой подтверждения
-async function handleAddCommand(chatId, query) {
+async function handleAddCommand(chatId, query, userId) {
   let results;
   try {
     results = await searchMulti(query);
@@ -123,7 +124,7 @@ async function handleAddCommand(chatId, query) {
   const exact = normalize(top.title) === normalize(query);
 
   if (exact) {
-    const outcome = await saveToCollection(top.media_type, top.tmdb_id);
+    const outcome = await saveToCollection(top.media_type, top.tmdb_id, userId);
 
     if (outcome.alreadyExists) {
       await tg('sendMessage', { chat_id: chatId, text: `«${top.title}» уже в избранном ✅` });
@@ -206,6 +207,7 @@ function escapeMd(str) {
 
 async function handleCallback(callback) {
   const chatId = callback.message.chat.id;
+  const userId = callback.from?.id ?? chatId;
   const data = callback.data || '';
 
   if (!data.startsWith('save_')) return;
@@ -213,7 +215,7 @@ async function handleCallback(callback) {
   const [, mediaType, tmdbIdStr] = data.split('_');
   const tmdbId = parseInt(tmdbIdStr, 10);
 
-  const outcome = await saveToCollection(mediaType, tmdbId);
+  const outcome = await saveToCollection(mediaType, tmdbId, userId);
 
   if (outcome.alreadyExists) {
     await tg('answerCallbackQuery', {
@@ -238,12 +240,13 @@ async function handleCallback(callback) {
 }
 
 // Общая логика сохранения фильма/сериала в базу — используется и из /ad, и из кнопки
-async function saveToCollection(mediaType, tmdbId) {
+async function saveToCollection(mediaType, tmdbId, telegramId) {
   const { data: existing } = await supabase
     .from('movies')
     .select('id')
     .eq('tmdb_id', tmdbId)
     .eq('media_type', mediaType)
+    .eq('telegram_id', telegramId)
     .maybeSingle();
 
   if (existing) return { alreadyExists: true };
@@ -265,6 +268,7 @@ async function saveToCollection(mediaType, tmdbId) {
     year: item.year,
     rating: item.rating,
     google_query: item.google_query,
+    telegram_id: telegramId,
   });
 
   if (error) {
@@ -278,4 +282,5 @@ async function saveToCollection(mediaType, tmdbId) {
 // Telegram иногда шлёт GET для проверки — отвечаем, чтобы не было 405 в логах
 export async function GET() {
   return Response.json({ ok: true, info: 'Telegram webhook is alive' });
-}
+      }
+    

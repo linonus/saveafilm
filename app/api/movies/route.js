@@ -1,32 +1,73 @@
 import { supabase } from '../../../lib/supabase';
 import { getDetails } from '../../../lib/tmdb';
-import { getTelegramUserId } from '../../../lib/telegramAuth';
+import { getTelegramUser } from '../../../lib/telegramAuth';
 
 export const dynamic = 'force-dynamic';
 
+async function upsertUser(user) {
+  await supabase.from('users').upsert({
+    telegram_id: user.id,
+    username: user.username || null,
+    first_name: user.first_name || null,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function areFriends(a, b) {
+  const { data } = await supabase
+    .from('friends')
+    .select('id')
+    .eq('status', 'accepted')
+    .or(
+      `and(requester_id.eq.${a},addressee_id.eq.${b}),and(requester_id.eq.${b},addressee_id.eq.${a})`
+    )
+    .maybeSingle();
+  return !!data;
+}
+
 export async function GET(request) {
-  const userId = getTelegramUserId(request);
-  if (!userId) {
+  const user = getTelegramUser(request);
+  if (!user) {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
+  }
+  await upsertUser(user);
+  const userId = user.id;
+
+  const { searchParams } = new URL(request.url);
+  const friendParam = searchParams.get('friend');
+  let targetId = userId;
+
+  if (friendParam) {
+    const friendId = parseInt(friendParam, 10);
+    if (!friendId || friendId === userId) {
+      return Response.json({ error: 'invalid_friend' }, { status: 400 });
+    }
+    const ok = await areFriends(userId, friendId);
+    if (!ok) {
+      return Response.json({ error: 'not_friends' }, { status: 403 });
+    }
+    targetId = friendId;
   }
 
   const { data, error } = await supabase
     .from('movies')
     .select('*')
-    .eq('telegram_id', userId)
+    .eq('telegram_id', targetId)
     .order('added_at', { ascending: false });
 
   if (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
-  return Response.json({ movies: data });
+  return Response.json({ movies: data, isOwn: targetId === userId });
 }
 
 export async function POST(request) {
-  const userId = getTelegramUserId(request);
-  if (!userId) {
+  const user = getTelegramUser(request);
+  if (!user) {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
+  await upsertUser(user);
+  const userId = user.id;
 
   const body = await request.json();
   const { tmdb_id, media_type } = body || {};
@@ -65,6 +106,7 @@ export async function POST(request) {
       year: item.year,
       rating: item.rating,
       google_query: item.google_query,
+      genres: item.genres,
       telegram_id: userId,
     })
     .select()
@@ -78,10 +120,11 @@ export async function POST(request) {
 }
 
 export async function DELETE(request) {
-  const userId = getTelegramUserId(request);
-  if (!userId) {
+  const user = getTelegramUser(request);
+  if (!user) {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
+  const userId = user.id;
 
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');
@@ -90,7 +133,6 @@ export async function DELETE(request) {
     return Response.json({ error: 'id обязателен' }, { status: 400 });
   }
 
-  // eq('telegram_id', userId) — чтобы нельзя было удалить чужой фильм, подставив id
   const { error } = await supabase
     .from('movies')
     .delete()

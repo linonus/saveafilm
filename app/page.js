@@ -83,6 +83,14 @@ function SmallChevronDown() {
   );
 }
 
+function HeartIcon({ filled }) {
+  return (
+    <svg viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 21s-6.7-4.35-9.3-8.2C1 10.1 1.6 6.7 4.6 5.2c2.3-1.15 4.7-.3 6 1.4l1.4 1.8 1.4-1.8c1.3-1.7 3.7-2.55 6-1.4 3 1.5 3.6 4.9 1.9 7.6C18.7 16.65 12 21 12 21z" />
+    </svg>
+  );
+}
+
 function getInitData() {
   if (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) {
     return window.Telegram.WebApp.initData;
@@ -157,6 +165,34 @@ function groupByMovie(rawMovies) {
   return Array.from(map.values());
 }
 
+function LoadingOverlay() {
+  return (
+    <div className={styles.splash}>
+      <div className={styles.splashLogo}>
+        <span className={`marquee ${styles.splashWord} ${styles.splashSave}`}>Save</span>
+        <span className={`marquee ${styles.splashWord} ${styles.splashA}`}>A</span>
+        <span className={`marquee ${styles.splashWord} ${styles.splashFilm}`}>Film</span>
+      </div>
+      <div className={styles.spinner} />
+    </div>
+  );
+}
+
+// Показывает флаг только если состояние active остаётся истинным дольше
+// delay — так короткие, почти мгновенные загрузки не мигают заставкой
+function useDelayedFlag(active, delay = 400) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setShow(false);
+      return;
+    }
+    const t = setTimeout(() => setShow(true), delay);
+    return () => clearTimeout(t);
+  }, [active, delay]);
+  return show;
+}
+
 export default function Home() {
   const [appLoading, setAppLoading] = useState(true);
   const [authError, setAuthError] = useState(false);
@@ -164,6 +200,7 @@ export default function Home() {
   const [myMovies, setMyMovies] = useState([]);
   const [friendMovies, setFriendMovies] = useState([]);
   const [friendMoviesLoading, setFriendMoviesLoading] = useState(false);
+  const showFriendLoading = useDelayedFlag(friendMoviesLoading, 400);
 
   const [tab, setTab] = useState('favorites'); // 'favorites' | 'search' | 'profile'
   const [query, setQuery] = useState('');
@@ -177,8 +214,6 @@ export default function Home() {
 
   const [profile, setProfile] = useState(null); // { me, friends, incoming, outgoing }
   const [friendsOpen, setFriendsOpen] = useState(false);
-  const [friendUsername, setFriendUsername] = useState('');
-  const [friendMsg, setFriendMsg] = useState('');
 
   const [viewingFriendId, setViewingFriendId] = useState(''); // '' | 'all' | id
   const [filterYear, setFilterYear] = useState('');
@@ -369,34 +404,35 @@ export default function Home() {
     setSelected(m);
   }
 
-  async function sendFriendRequest() {
-    const username = friendUsername.trim();
-    if (!username) return;
-    setFriendMsg('');
-    try {
-      const res = await apiFetch('/api/friends', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setFriendMsg(`Заявка отправлена: ${displayName(data.target)}`);
-        setFriendUsername('');
-        await loadProfile();
-      } else if (data.error === 'user_not_found') {
-        setFriendMsg('Такого пользователя нет — он ещё не открывал приложение или не писал боту');
-      } else if (data.error === 'already_exists') {
-        setFriendMsg(data.status === 'accepted' ? 'Уже в друзьях' : 'Заявка уже отправлена');
-      } else if (data.error === 'self') {
-        setFriendMsg('Это твой собственный ник :)');
-      } else {
-        setFriendMsg('Не получилось отправить заявку');
-      }
-    } catch (err) {
+  // Переключает "любимый" фильм — сразу меняем на экране, откатываем при ошибке
+  function toggleFavorite(m) {
+    const next = !m.is_favorite;
+    setMyMovies((prev) => prev.map((x) => (x.id === m.id ? { ...x, is_favorite: next } : x)));
+    apiFetch('/api/movies', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: m.id, is_favorite: next }),
+    }).catch((err) => {
       console.error(err);
-      setFriendMsg('Не получилось отправить заявку');
-    }
+      setMyMovies((prev) => prev.map((x) => (x.id === m.id ? { ...x, is_favorite: !next } : x)));
+    });
+  }
+
+  // Открывает карточку из поиска и дотягивает жанры (поиск TMDB их не отдаёт)
+  function openSearchItem(item) {
+    setSelected({ ...item, _fromSearch: true });
+    fetch(`/api/details?media_type=${item.media_type}&id=${item.tmdb_id}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.item) {
+          setSelected((prev) =>
+            prev && prev.tmdb_id === item.tmdb_id && prev.media_type === item.media_type
+              ? { ...prev, genres: data.item.genres, description: data.item.description || prev.description }
+              : prev
+          );
+        }
+      })
+      .catch(() => {});
   }
 
   async function respondRequest(requestId, action) {
@@ -459,11 +495,13 @@ export default function Home() {
   }, [baseMovies]);
 
   const filteredMovies = useMemo(() => {
-    return baseMovies.filter((m) => {
-      if (filterYear && m.year !== filterYear) return false;
-      if (filterGenre && !(m.genres || []).includes(filterGenre)) return false;
-      return true;
-    });
+    return baseMovies
+      .filter((m) => {
+        if (filterYear && m.year !== filterYear) return false;
+        if (filterGenre && !(m.genres || []).includes(filterGenre)) return false;
+        return true;
+      })
+      .sort((a, b) => (b.is_favorite ? 1 : 0) - (a.is_favorite ? 1 : 0));
   }, [baseMovies, filterYear, filterGenre]);
 
   const friendProfileById = useMemo(() => {
@@ -507,20 +545,12 @@ export default function Home() {
   const activePicker = openPicker ? pickerConfig[openPicker] : null;
 
   if (appLoading) {
-    return (
-      <div className={styles.splash}>
-        <div className={styles.splashLogo}>
-          <span className={`marquee ${styles.splashWord} ${styles.splashSave}`}>Save</span>
-          <span className={`marquee ${styles.splashWord} ${styles.splashA}`}>A</span>
-          <span className={`marquee ${styles.splashWord} ${styles.splashFilm}`}>Film</span>
-        </div>
-        <div className={styles.spinner} />
-      </div>
-    );
+    return <LoadingOverlay />;
   }
 
   return (
     <div className={styles.page}>
+      {showFriendLoading && <LoadingOverlay />}
       <div className={styles.header}>
         <div className={styles.headerLeft}>
           <h1 className={`marquee ${styles.title}`}>SAVE A FILM</h1>
@@ -574,7 +604,7 @@ export default function Home() {
                   <div
                     className={styles.searchItem}
                     key={`${item.media_type}_${item.tmdb_id}`}
-                    onClick={() => setSelected({ ...item, _fromSearch: true })}
+                    onClick={() => openSearchItem(item)}
                   >
                     {item.poster_url ? (
                       <img className={styles.searchPoster} src={item.poster_url} alt="" />
@@ -685,6 +715,23 @@ export default function Home() {
                       <CheckIcon />
                     </div>
                   )}
+                  {!selectMode && isOwnView && (
+                    <button
+                      className={`${styles.heartBtn} ${m.is_favorite ? styles.heartBtnActive : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleFavorite(m);
+                      }}
+                      aria-label="Любимое"
+                    >
+                      <HeartIcon filled={!!m.is_favorite} />
+                    </button>
+                  )}
+                  {!isOwnView && m.is_favorite && (
+                    <div className={styles.heartBadgeReadonly}>
+                      <HeartIcon filled />
+                    </div>
+                  )}
                   {owners.length > 0 && (
                     <div className={styles.ownerAvatars}>
                       {owners.slice(0, 3).map((oid) => (
@@ -732,20 +779,6 @@ export default function Home() {
               Пригласить друга
             </button>
           </div>
-
-          <div className={styles.sectionLabel}>Добавить по нику</div>
-          <div className={styles.addFriendRow}>
-            <input
-              className={styles.searchInput}
-              placeholder="username без @"
-              value={friendUsername}
-              onChange={(e) => setFriendUsername(e.target.value)}
-            />
-            <button className={styles.addBtn} onClick={sendFriendRequest}>
-              Отправить
-            </button>
-          </div>
-          {friendMsg && <div className={styles.friendMsg}>{friendMsg}</div>}
 
           {profile?.incoming?.length > 0 && (
             <>

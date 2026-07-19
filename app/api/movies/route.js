@@ -11,8 +11,6 @@ async function upsertUser(user) {
     first_name: user.first_name || null,
     updated_at: new Date().toISOString(),
   };
-  // photo_url добавляем в апдейт, только если реально пришёл — иначе не
-  // затираем ранее сохранённое значение пустым
   if (user.photo_url) payload.photo_url = user.photo_url;
   await supabase.from('users').upsert(payload);
 }
@@ -50,7 +48,6 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const friendParam = searchParams.get('friend');
 
-  // Сводная лента фильмов всех друзей сразу
   if (friendParam === 'all') {
     const friendIds = await getAcceptedFriendIds(userId);
     if (friendIds.length === 0) {
@@ -140,6 +137,36 @@ export async function POST(request) {
       genres: item.genres,
       telegram_id: userId,
     })
+    .select()
+    .single();
+
+  if (error) {
+    return Response.json({ error: error.message }, { status: 500 });
+  }
+
+  return Response.json({ movie: data });
+}
+
+// Переключение "любимого" — только для своих фильмов
+export async function PATCH(request) {
+  const user = getTelegramUser(request);
+  if (!user) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 });
+  }
+  const userId = user.id;
+
+  const body = await request.json();
+  const { id, is_favorite } = body || {};
+
+  if (!id || typeof is_favorite !== 'boolean') {
+    return Response.json({ error: 'bad_request' }, { status: 400 });
+  }
+
+  const { data, error } = await supabase
+    .from('movies')
+    .update({ is_favorite })
+    .eq('id', id)
+    .eq('telegram_id', userId)
     .select()
     .single();
 

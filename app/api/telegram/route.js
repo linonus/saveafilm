@@ -15,7 +15,13 @@ async function tg(method, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return res.json();
+  const data = await res.json();
+  if (!data.ok) {
+    // Telegram отвечает 200 OK даже на свои собственные ошибки (например,
+    // "не смог распарсить MarkdownV2") — раньше это проходило незаметно.
+    console.error(`Telegram API ${method} failed:`, JSON.stringify(data));
+  }
+  return data;
 }
 
 // Сохраняем/обновляем базовые данные о пользователе — нужно, чтобы искать
@@ -469,7 +475,10 @@ async function sendMovieCard(chatId, item) {
     ? item.description.slice(0, 600)
     : 'Описание отсутствует.';
 
-  const caption = `🎬 *${escapeMd(item.title)}*${item.year ? ` (${item.year})` : ''}\n⭐ ${ratingText}\n\n${escapeMd(description)}`;
+  // Круглые скобки — зарезервированный символ в MarkdownV2, без экранирования
+  // Telegram молча отклонял всё сообщение целиком
+  const yearPart = item.year ? ` \\(${escapeMd(String(item.year))}\\)` : '';
+  const caption = `🎬 *${escapeMd(item.title)}*${yearPart}\n⭐ ${escapeMd(ratingText)}\n\n${escapeMd(description)}`;
 
   const keyboard = {
     inline_keyboard: [
@@ -488,8 +497,9 @@ async function sendMovieCard(chatId, item) {
     ],
   };
 
+  let result;
   if (item.poster_url) {
-    await tg('sendPhoto', {
+    result = await tg('sendPhoto', {
       chat_id: chatId,
       photo: item.poster_url,
       caption,
@@ -497,12 +507,24 @@ async function sendMovieCard(chatId, item) {
       reply_markup: keyboard,
     });
   } else {
-    await tg('sendMessage', {
+    result = await tg('sendMessage', {
       chat_id: chatId,
       text: caption,
       parse_mode: 'MarkdownV2',
       reply_markup: keyboard,
     });
+  }
+
+  // Подстраховка: если Markdown всё же не пропарсился (например, из-за
+  // непредвиденных символов в описании из TMDB) — присылаем то же самое
+  // простым текстом без форматирования, чтобы пользователь точно увидел карточку
+  if (!result?.ok) {
+    const plainCaption = `🎬 ${item.title}${item.year ? ` (${item.year})` : ''}\n⭐ ${ratingText}\n\n${description}`;
+    if (item.poster_url) {
+      await tg('sendPhoto', { chat_id: chatId, photo: item.poster_url, caption: plainCaption, reply_markup: keyboard });
+    } else {
+      await tg('sendMessage', { chat_id: chatId, text: plainCaption, reply_markup: keyboard });
+    }
   }
 }
 
@@ -608,4 +630,5 @@ async function saveToCollection(mediaType, tmdbId, telegramId) {
 // Telegram иногда шлёт GET для проверки — отвечаем, чтобы не было 405 в логах
 export async function GET() {
   return Response.json({ ok: true, info: 'Telegram webhook is alive' });
-}
+      }
+
